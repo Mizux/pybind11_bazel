@@ -1,0 +1,100 @@
+diff --git a/cc/common/cc_helper.bzl b/cc/common/cc_helper.bzl
+index 8444d4f..91bbed1 100644
+--- a/cc/common/cc_helper.bzl
++++ b/cc/common/cc_helper.bzl
+@@ -68,6 +68,7 @@ def _libraries_from_linking_context(linking_context):
+ def _is_valid_shared_library_name(shared_library_name):
+     if (shared_library_name.endswith(".so") or
+         shared_library_name.endswith(".dll") or
++        shared_library_name.endswith(".pyd") or
+         shared_library_name.endswith(".dylib") or
+         shared_library_name.endswith(".wasm")):
+         return True
+@@ -512,7 +513,7 @@ def _get_toolchain_global_make_variables(cc_toolchain):
+     result["CROSSTOOLTOP"] = cc_toolchain._crosstool_top_path
+     return result
+ 
+-_SHARED_LIBRARY_EXTENSIONS = ["so", "dll", "dylib", "wasm"]
++_SHARED_LIBRARY_EXTENSIONS = ["so", "dll", "pyd", "dylib", "wasm"]
+ 
+ def _is_valid_shared_library_artifact(shared_library):
+     if (shared_library.extension in _SHARED_LIBRARY_EXTENSIONS):
+diff --git a/cc/common/cc_helper_internal.bzl b/cc/common/cc_helper_internal.bzl
+index 5309491..ef41e11 100644
+--- a/cc/common/cc_helper_internal.bzl
++++ b/cc/common/cc_helper_internal.bzl
+@@ -96,7 +96,7 @@ _ARCHIVE = [".a", ".lib"]
+ _PIC_ARCHIVE = [".pic.a"]
+ _ALWAYSLINK_LIBRARY = [".lo"]
+ _ALWAYSLINK_PIC_LIBRARY = [".pic.lo"]
+-_SHARED_LIBRARY = [".so", ".dylib", ".dll", ".wasm"]
++_SHARED_LIBRARY = [".so", ".dylib", ".dll", ".pyd", ".wasm"]
+ _INTERFACE_SHARED_LIBRARY = [".ifso", ".tbd", ".lib", ".dll.a"]
+ _OBJECT_FILE = [".o", ".obj"]
+ _PIC_OBJECT_FILE = [".pic.o"]
+@@ -170,7 +170,7 @@ _ArtifactCategoryInfo, _unused_new_aci = provider(
+ _artifact_categories = [
+     _ArtifactCategoryInfo("STATIC_LIBRARY", "lib", ".a", ".lib"),
+     _ArtifactCategoryInfo("ALWAYSLINK_STATIC_LIBRARY", "lib", ".lo", ".lo.lib"),
+-    _ArtifactCategoryInfo("DYNAMIC_LIBRARY", "lib", ".so", ".dylib", ".dll", ".wasm"),
++    _ArtifactCategoryInfo("DYNAMIC_LIBRARY", "lib", ".so", ".dylib", ".dll", ".pyd", ".wasm"),
+     _ArtifactCategoryInfo("EXECUTABLE", "", "", ".exe", ".wasm"),
+     _ArtifactCategoryInfo("INTERFACE_LIBRARY", "lib", ".ifso", ".tbd", ".if.lib", ".lib"),
+     _ArtifactCategoryInfo("PIC_FILE", "", ".pic"),
+diff --git a/cc/private/link/create_libraries_to_link_values.bzl b/cc/private/link/create_libraries_to_link_values.bzl
+index 3adf203..7a833e8 100644
+--- a/cc/private/link/create_libraries_to_link_values.bzl
++++ b/cc/private/link/create_libraries_to_link_values.bzl
+@@ -286,11 +286,12 @@ def _add_dynamic_library_to_link(
+     # -l:libfoo.so.1 -> libfoo.so.1
+     has_compatible_name = (
+         name.startswith("lib") or
+-        (not name.endswith(".so") and not name.endswith(".dylib") and not name.endswith(".dll"))
++        (not name.endswith(".so") and not name.endswith(".dylib") and \
++         not name.endswith(".dll") and not name.endswith(".pyd"))
+     )
+     if shared_library and has_compatible_name:
+         lib_name = name.removeprefix("lib").removesuffix(".so").removesuffix(".dylib") \
+-            .removesuffix(".dll")
++            .removesuffix(".dll").removesuffix(".pyd")
+         libraries_to_link_values.append(
+             _NamedLibraryInfo(
+                 type = _TYPE.DYNAMIC_LIBRARY,
+diff --git a/cc/private/rules_impl/cc_binary.bzl b/cc/private/rules_impl/cc_binary.bzl
+index 8b3f430..f1d0943 100644
+--- a/cc/private/rules_impl/cc_binary.bzl
++++ b/cc/private/rules_impl/cc_binary.bzl
+@@ -331,7 +331,7 @@ def _create_transitive_linking_actions(
+     # entries during linking process.
+     for libs in precompiled_files[:]:
+         for artifact in libs:
+-            if _matches([".so", ".dylib", ".dll", ".ifso", ".tbd", ".lib", ".dll.a"], artifact.basename) or cc_helper.is_valid_shared_library_artifact(artifact):
++            if _matches([".so", ".dylib", ".dll", ".pyd", ".ifso", ".tbd", ".lib", ".dll.a"], artifact.basename) or cc_helper.is_valid_shared_library_artifact(artifact):
+                 library_to_link = cc_common.create_library_to_link(
+                     actions = ctx.actions,
+                     feature_configuration = feature_configuration,
+@@ -477,7 +477,7 @@ def cc_binary_impl(ctx, additional_linkopts, force_linkstatic = False):
+     # the target name.
+     # This is no longer necessary, the toolchain can figure out the correct file extensions.
+     target_name = ctx.label.name
+-    has_legacy_link_shared_name = _is_link_shared(ctx) and (_matches([".so", ".dylib", ".dll"], target_name) or cc_helper.is_valid_shared_library_name(target_name))
++    has_legacy_link_shared_name = _is_link_shared(ctx) and (_matches([".so", ".dylib", ".dll", ".pyd"], target_name) or cc_helper.is_valid_shared_library_name(target_name))
+     binary = None
+     is_dbg_build = (cc_toolchain._cpp_configuration.compilation_mode() == "dbg")
+     if has_legacy_link_shared_name:
+diff --git a/cc/private/toolchain/windows_cc_toolchain_config.bzl b/cc/private/toolchain/windows_cc_toolchain_config.bzl
+index 5d0d40f..38a67aa 100644
+--- a/cc/private/toolchain/windows_cc_toolchain_config.bzl
++++ b/cc/private/toolchain/windows_cc_toolchain_config.bzl
+@@ -119,6 +119,11 @@ def _impl(ctx):
+                 prefix = "",
+                 extension = ".dll",
+             ),
++            artifact_name_pattern(
++                category_name = "dynamic_library",
++                prefix = "",
++                extension = ".pyd",
++            ),
+             artifact_name_pattern(
+                 category_name = "interface_library",
+                 prefix = "",

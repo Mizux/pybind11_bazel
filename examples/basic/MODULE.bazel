@@ -1,4 +1,12 @@
 bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_cc", version = "0.2.9")
+git_override(
+    module_name = "rules_cc",
+    commit = "d9f1178c796ee3a83a7bcaf6445601ce617b8fde",
+    patch_strip = 1,
+    patches = ["//:patches/rules_cc.patch"],
+    remote = "https://github.com/bazelbuild/rules_cc.git",
+)
 bazel_dep(name = "rules_python", version = "1.9.0")
 bazel_dep(name = "pybind11_bazel")
 local_path_override(
